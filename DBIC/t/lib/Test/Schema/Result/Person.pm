@@ -37,10 +37,4 @@ __PACKAGE__->has_many(
     'articles_id'
 );
 
-__PACKAGE__->has_many(
-    comments => 'Test::Schema::Result::Comment',
-    'comments_id'
-);
-
-
 1;

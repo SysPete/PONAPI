@@ -551,7 +551,7 @@ subtest '... delete_relationships' => sub {
             }
          ],
          "... can delete as expected",
-    );
+    ) or diag explain @res;
 
     my @retrieve = $dao->retrieve( @TEST_ARGS_TYPE_ID );
 

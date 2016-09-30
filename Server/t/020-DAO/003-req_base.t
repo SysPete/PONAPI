@@ -32,6 +32,12 @@ subtest '... providing a request base string' => sub {
     my $qr_prefix = qr/^$REQ_BASE/;
 
     ok($doc->{links}, '... the document has a `links` key');
+
+    use DDP;
+    p $doc;
+};
+done_testing
+__END__
     ok($doc->{links}{self}, '... the document has a `links.self` key');
     like($doc->{links}{self}, $qr_prefix, '... document self-link has the expected req_base prefix');
 

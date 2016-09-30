@@ -1,8 +1,10 @@
 package PONAPI::Repository::DBIx::Class;
-
+# ABSTRACT: DBIx::Class respository layer for PONAPI
+#
 use Moose;
 
-#use List::Util 1.33 qw(any none);
+our $VERSION = 0.001;
+use List::Util 1.33 qw(any);
 use PONAPI::Constants;
 use PONAPI::Exception;
 
@@ -69,7 +71,10 @@ sub BUILD {
     };
 
     PONAPI::Exception->throw( message => "$@", sql => 1, )
-      unless $ok
+      unless $ok;
+
+    use DDP;
+    #p $self->sources;
 }
 
 =head2 resultset
@@ -82,7 +87,11 @@ sub resultset {
     return $_[0]->schema->resultset;
 }
 
-=head2 has_type $source_name
+=head2 has_type $type
+
+Definition: Must return true if the repository handles C<$type>.
+
+Returns true if the schema has a result source with name C<$type>.
 
 =cut
 
@@ -91,15 +100,30 @@ sub has_type {
     exists $self->sources->{$type};
 }
 
-=head2 has_relationship $source_name, $relationship_name
+=head2 has_relationship $type1, $type2
+
+Definition: Must return true if C<$type1> has a relationship to C<$type2>.
+
+Returns true if result source C<$type1> has a relationshiop to result source
+C<$type2>.
+
+NOTE: C<$type2> is B<NOT> the name of the relationship between C<$type1> and
+C<$type2>. For example for result sources Book and Author:
+
+    $book->belongs_to('author')
+
+With this relationship C<$type1> is C<Book> and C<$type2> is C<Author>.
 
 =cut
 
 sub has_relationship {
-    my ( $self, $type, $rel_name ) = @_;
-    return $self->has_type($type)
-      ? $self->sources->{$type}->has_relationship($rel_name)
-      : 0;
+    my ( $self, $type1, $type2 ) = @_;
+    return 0 unless ( $self->has_type($type1) && $self->has_type($type2) );
+
+    my $source = $self->sources->{$type1};
+
+    return any { $_ eq $type2 }
+      map { $source->related_source($_)->source_name } $source->relationships;
 }
 
 =head2 has_one_to_many_relationship $source_name, $relationship_name
@@ -144,7 +168,6 @@ Required args:
 sub retrieve_all {
     my ( $self, %args ) = @_;
 
-    die "in retriev_all";
 
     my $attrs = {
         $args{page} ? %{ $args{page} } : (),
@@ -165,12 +188,7 @@ sub retrieve_all {
     }
 
     my $rset =
-      $self->schema->resutset( $args{type} )->search( $args{filter}, $attrs );
-
-      use DDP;
-      p %args;
-      p $attrs;
-      p $rset->all;
+      $self->schema->resultset( $args{type} )->search( $args{filter}, $attrs );
 
     $self->_add_resources( rset => $rset, %args );
 }
