@@ -118,13 +118,14 @@ With this relationship C<$type1> is C<Book> and C<$type2> is C<Author>.
 
 sub has_relationship {
     my ( $self, $type1, $type2 ) = @_;
-    return 0 unless ( $self->has_type($type1) && $self->has_type($type2) );
+    return 0 unless $self->sources->{$type2};
 
-    my $source = $self->sources->{$type1};
-
-    return any {
-        $type2 eq $source->related_source($_)->source_name
-    } $source->relationships;
+    if ( my $source = $self->sources->{$type1} ) {
+        return any {
+            $type2 eq $source->related_source($_)->source_name
+        } $source->relationships;
+    }
+    return 0;
 }
 
 =head2 has_one_to_many_relationship $type1, $type2
@@ -138,14 +139,15 @@ Same as L<has_relationship> but also checks that the accessor is C<multi>.
 
 sub has_one_to_many_relationship {
     my ( $self, $type1, $type2 ) = @_;
-    return 0 unless ( $self->has_type($type1) && $self->has_type($type2) );
+    return 0 unless $self->sources->{$type2};
 
-    my $source = $self->sources->{$type1};
-
-    return any {
-        $source->relationship_info($_)->{attrs}->{accessor} eq 'multi'
-          && $type2 eq $source->related_source($_)->source_name
-    } $source->relationships;
+    if ( my $source = $self->sources->{$type1} ) {
+        return any {
+            $source->relationship_info($_)->{attrs}->{accessor} eq 'multi'
+              && $type2 eq $source->related_source($_)->source_name
+        } $source->relationships;
+    }
+    return 0;
 }
 
 =head2 type_has_fields $type, \@fields
