@@ -12,8 +12,8 @@ BEGIN {
 
 my $schema = Test::Schema->connect("DBI:SQLite:dbname=mockdb.sqlite");
 
-my $repository = PONAPI::Repository::DBIx::Class->new(schema => $schema);
-isa_ok($repository, 'PONAPI::Repository::DBIx::Class');
+my $repository = PONAPI::Repository::DBIx::Class->new( schema => $schema );
+isa_ok( $repository, 'PONAPI::Repository::DBIx::Class' );
 
 subtest '... has_type' => sub {
 
@@ -58,6 +58,31 @@ subtest '... type_has_fields' => sub {
         'Person', [ 'people_id', 'name', 'age', 'gender' ]
       ),
       "Person type_has_fields people_id, name, age, gender is TRUE";
+
+    ok $repository->type_has_fields(
+        'Person', [ 'name' ]
+      ),
+      "Person type_has_fields name is TRUE";
+
+    ok !$repository->type_has_fields(
+        'Person', [ 'people_id', 'name', 'age', 'gender', 'foo' ]
+      ),
+      "Person type_has_fields people_id, name, age, gender, foo is FALSE";
+
+    ok $repository->type_has_fields(
+        'Article',
+        [
+            'articles_id', 'title',  'body', 'created',
+            'updated',     'status', 'authors_id'
+        ]
+      ),
+      "Article type_has_fields articles_id, title, body, created, updated ,status, authors_id is TRUE";
+
+    ok $repository->type_has_fields(
+        'Comment', [ 'comments_id', 'body', 'articles_id' ]
+      ),
+      "Comment type_has_fields comments_id, body, articles_id is TRUE";
+
 };
 
 done_testing;
