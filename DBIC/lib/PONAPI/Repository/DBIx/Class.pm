@@ -4,7 +4,7 @@ package PONAPI::Repository::DBIx::Class;
 use Moose;
 
 our $VERSION = 0.001;
-use List::Util 1.33 qw(all any);
+use List::Util 1.33 qw(all);
 use PONAPI::Constants;
 use PONAPI::Exception;
 
@@ -72,9 +72,6 @@ sub BUILD {
 
     PONAPI::Exception->throw( message => "$@", sql => 1, )
       unless $ok;
-
-    use DDP;
-    #p $self->sources;
 }
 
 =head2 resultset
@@ -100,57 +97,39 @@ sub has_type {
     exists $self->sources->{$type};
 }
 
-=head2 has_relationship $type1, $type2
+=head2 has_relationship $source_name, $rel
 
-Definition: Must return true if C<$type1> has a relationship to C<$type2>.
-
-Returns true if result source C<$type1> has a relationshiop to result source
-C<$type2>.
-
-NOTE: C<$type2> is B<NOT> the name of the relationship between C<$type1> and
-C<$type2>. For example for result sources Book and Author:
-
-    $book->belongs_to('author')
-
-With this relationship C<$type1> is C<Book> and C<$type2> is C<Author>.
+Returns true if result source C<$source_name> has a relationship named C<$rel>.
 
 =cut
 
 sub has_relationship {
-    my ( $self, $type1, $type2 ) = @_;
-    return 0 unless $self->sources->{$type2};
+    my ( $self, $source_name, $rel ) = @_;
 
-    if ( my $source = $self->sources->{$type1} ) {
-        return any {
-            $type2 eq $source->related_source($_)->source_name
-        } $source->relationships;
-    }
-    return 0;
+    return $self->sources->{$source_name}
+      && $self->sources->{$source_name}->has_relationship($rel) ? 1 : 0;
 }
 
-=head2 has_one_to_many_relationship $type1, $type2
+=head2 has_one_to_many_relationship $source_name, $rel
 
-Definition: Must return true if C<$type1> has a relationship to C<$type2>, and
-that relationship is one-to-many.
-
-Same as L<has_relationship> but also checks that the accessor is C<multi>.
+Returns true if result source C<$source_name> has a relationship named C<$rel>
+and also checks that the relationship accessor is C<multi>
+(L<DBIx::Class::Relationship/has_many>).
 
 =cut
 
 sub has_one_to_many_relationship {
-    my ( $self, $type1, $type2 ) = @_;
-    return 0 unless $self->sources->{$type2};
+    my ( $self, $source_name, $rel ) = @_;
 
-    if ( my $source = $self->sources->{$type1} ) {
-        return any {
-            $source->relationship_info($_)->{attrs}->{accessor} eq 'multi'
-              && $type2 eq $source->related_source($_)->source_name
-        } $source->relationships;
-    }
-    return 0;
+    return $self->has_relationship( $source_name, $rel )
+      && $self->sources->{$source_name}->relationship_info($rel)->{attrs}
+      ->{accessor} eq 'multi' ? 1 : 0;
 }
 
 =head2 type_has_fields $type, \@fields
+
+Definition: We'll get a type and an arrayref of fields, and we'll return true
+if B<all> all elements in the arrayref are attributes of type.
 
 =cut
 

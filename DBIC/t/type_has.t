@@ -26,30 +26,30 @@ subtest '... has_type' => sub {
 
 subtest '... has_relationship' => sub {
 
-    ok $repository->has_relationship( 'Article', 'Comment' ),
-      "Article has_relationship Comment is TRUE";
-    ok $repository->has_relationship( 'Comment', 'Article' ),
-      "Comment has_relationship Article is TRUE";
-    ok $repository->has_relationship( 'Article', 'Person' ),
-      "Article has_relationship Person is TRUE";
+    ok $repository->has_relationship( 'Article', 'comments' ),
+      "Article has_relationship comments is TRUE";
+    ok $repository->has_relationship( 'Comment', 'article' ),
+      "Comment has_relationship article is TRUE";
+    ok $repository->has_relationship( 'Article', 'author' ),
+      "Article has_relationship author is TRUE";
 
-    ok !$repository->has_relationship( 'Comment', 'Person' ),
-      "Comment has_relationship Person is FALSE";
-    ok !$repository->has_relationship( 'Foo', 'Person' ),
-      "Foo has_relationship Person is FALSE";
+    ok !$repository->has_relationship( 'Comment', 'author' ),
+      "Comment has_relationship author is FALSE";
+    ok !$repository->has_relationship( 'Foo', 'author' ),
+      "Foo has_relationship author is FALSE";
 };
 
 subtest '... has_one_to_many_relationship' => sub {
 
-    ok $repository->has_one_to_many_relationship( 'Article', 'Comment' ),
-      "Article has_one_to_many_relationship Comment is TRUE";
-    ok $repository->has_one_to_many_relationship( 'Person', 'Article' ),
-      "Person has_one_to_many_relationship Article is TRUE";
+    ok $repository->has_one_to_many_relationship( 'Article', 'comments' ),
+      "Article has_one_to_many_relationship comments is TRUE";
+    ok $repository->has_one_to_many_relationship( 'Person', 'articles' ),
+      "Person has_one_to_many_relationship articles is TRUE";
 
-    ok !$repository->has_one_to_many_relationship( 'Article', 'Person' ),
-      "Article has_one_to_many_relationship Person is FALSE";
-    ok !$repository->has_one_to_many_relationship( 'Article', 'Foo' ),
-      "Article has_one_to_many_relationship Foo is FALSE";
+    ok !$repository->has_one_to_many_relationship( 'Article', 'author' ),
+      "Article has_one_to_many_relationship author is FALSE";
+    ok !$repository->has_one_to_many_relationship( 'Article', 'foo' ),
+      "Article has_one_to_many_relationship foo is FALSE";
 };
 
 subtest '... type_has_fields' => sub {
