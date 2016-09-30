@@ -2,7 +2,7 @@ package PONAPI::Repository::DBIx::Class;
 
 use Moose;
 
-use List::Util 1.33 qw(any none);
+#use List::Util 1.33 qw(any none);
 use PONAPI::Constants;
 use PONAPI::Exception;
 
@@ -12,7 +12,7 @@ with 'PONAPI::Repository';
 
 =head1 schema
 
-A connected L<DBIx::Class::Schema>.
+A connected L<DBIx::Class::Schema>. Required.
 
 =cut
 
@@ -22,20 +22,40 @@ has schema => (
     required => 1,
 );
 
-=head2 result_sources
+=head2 sources
 
-Array reference of the L</schema>'s result source names.
+Hash reference with the L</schema>'s result source names as keys and the
+related L<DBIx::Class::ResultSource> objects as values. This is lazy-loaded
+when needed.
+
+=over
+
+=item clearer: clear_sources
+
+=back
 
 =cut
 
-has result_sources => (
+has sources => (
     is      => 'ro',
-    isa     => 'ArrayRef',
+    isa     => 'HashRef',
     lazy    => 1,
     default => sub {
-        return [ $_[0]->schema->sources ];
-    }
+        my $self = shift;
+        return +{
+            map { $_ => $self->schema->source($_) } $self->schema->sources
+        };
+    },
+    clearer => 'clear_sources',
 );
+
+=head1 METHODS
+
+=head2 BUILD
+
+Use L<PONAPI::Exception/throw> as L<DBIx::Class::Schema/exception_action>.
+
+=cut
 
 sub BUILD {
     my $self = shift;
@@ -52,40 +72,79 @@ sub BUILD {
       unless $ok
 }
 
+=head2 resultset
+
+Shortcut for C<< $self->schema->resultset >>
+
+=cut
+
+sub resultset {
+    return $_[0]->schema->resultset;
+}
+
+=head2 has_type $source_name
+
+=cut
+
 sub has_type {
     my ( $self, $type ) = @_;
-    !! any { $_ eq $type } @{ $self->result_sources };
+    exists $self->sources->{$type};
 }
+
+=head2 has_relationship $source_name, $relationship_name
+
+=cut
 
 sub has_relationship {
     my ( $self, $type, $rel_name ) = @_;
-    if ( my $rset = $self->schema->resultset($type) ) {
-        $rset->result_source->has_relationship($rel_name);
-    }
-    return 0;
+    return $self->has_type($type)
+      ? $self->sources->{$type}->has_relationship($rel_name)
+      : 0;
 }
+
+=head2 has_one_to_many_relationship $source_name, $relationship_name
+
+=cut
 
 sub has_one_to_many_relationship {
     my ( $self, $type, $rel_name ) = @_;
-    if ( my $rset = $self->schema->resultset($type) ) {
-        if ( my $rel = $rset->result_source->relationship_info($rel_name) ) {
+    if ( my $source = $self->sources->{$type} ) {
+        if ( my $rel = $source->relationship_info($rel_name) ) {
             return !! $rel->{attrs}->{accessor} eq 'multi';
         }
     }
     return 0;
 }
 
+=head2 type_has_fields $source_name, \@column_names
+
+=cut
+
 sub type_has_fields {
     my ($self, $type, $fields) = @_;
 
-    my $rs = $self->schema->resultset($type)->result_source;
-    return 1 unless grep $rs->has_column($_), @$fields;
-    return;
+    if ( my $source = $self->sources->{$type} ) {
+        return 1 unless grep $source->has_column($_), @$fields;
+    }
+    return 0;
 }
+
+=head2 retrieve_all %args
+
+Required args:
+
+=over
+
+=item type => $source_name
+
+=back
+
+=cut
 
 sub retrieve_all {
     my ( $self, %args ) = @_;
-    my $type = $args{type};
+
+    die "in retriev_all";
 
     my $attrs = {
         $args{page} ? %{ $args{page} } : (),
@@ -97,7 +156,7 @@ sub retrieve_all {
             if ( $args{fields} && $args{fields}->{$rel} ) {
                 push @{ $attrs->{join} }, $rel;
                 push @{ $attrs->{'+columns'} },
-                  { map "$rel.$_" } @{ $args{fields}->{$rel} };
+                  map { "$rel.$_" } @{ $args{fields}->{$rel} };
             }
             else {
                 push @{ $attrs->{prefetch} }, $rel;
@@ -105,7 +164,13 @@ sub retrieve_all {
         }
     }
 
-    my $rset = $self->schema->resutset($type)->search( $args{filter}, $attrs );
+    my $rset =
+      $self->schema->resutset( $args{type} )->search( $args{filter}, $attrs );
+
+      use DDP;
+      p %args;
+      p $attrs;
+      p $rset->all;
 
     $self->_add_resources( rset => $rset, %args );
 }
@@ -204,7 +269,7 @@ sub create {
 
     $self->schema->txn_do(
         sub {
-            my $result = $self->schema->resultset($type)->create($attributes);
+            my $result = $self->resultset($type)->create($attributes);
             foreach my $rel ( keys %$relationships ) {
                 $result->create_related($rel, $relationships->{$rel}->{data});
             }
@@ -446,7 +511,7 @@ sub delete : method {
     my ( $self, %args ) = @_;
     my ( $type, $id ) = @args{qw< type id >};
 
-    $self->schema->resultset($type)->find($id)->delete;
+    $self->resultset($type)->find($id)->delete;
     return;
 }
 
@@ -544,7 +609,7 @@ sub _add_resources {
 
     $self->_add_pagination_links(
         page => $args{page},
-        rows => scalar $sth->rows,
+        #rows => scalar $sth->rows,
         document => $doc,
     ) if $args{page};
 
