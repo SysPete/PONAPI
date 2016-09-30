@@ -4,7 +4,7 @@ package PONAPI::Repository::DBIx::Class;
 use Moose;
 
 our $VERSION = 0.001;
-use List::Util 1.33 qw(any);
+use List::Util 1.33 qw(all any);
 use PONAPI::Constants;
 use PONAPI::Exception;
 
@@ -122,25 +122,33 @@ sub has_relationship {
 
     my $source = $self->sources->{$type1};
 
-    return any { $_ eq $type2 }
-      map { $source->related_source($_)->source_name } $source->relationships;
+    return any {
+        $type2 eq $source->related_source($_)->source_name
+    } $source->relationships;
 }
 
-=head2 has_one_to_many_relationship $source_name, $relationship_name
+=head2 has_one_to_many_relationship $type1, $type2
+
+Definition: Must return true if C<$type1> has a relationship to C<$type2>, and
+that relationship is one-to-many.
+
+Same as L<has_relationship> but also checks that the accessor is C<multi>.
 
 =cut
 
 sub has_one_to_many_relationship {
-    my ( $self, $type, $rel_name ) = @_;
-    if ( my $source = $self->sources->{$type} ) {
-        if ( my $rel = $source->relationship_info($rel_name) ) {
-            return !! $rel->{attrs}->{accessor} eq 'multi';
-        }
-    }
-    return 0;
+    my ( $self, $type1, $type2 ) = @_;
+    return 0 unless ( $self->has_type($type1) && $self->has_type($type2) );
+
+    my $source = $self->sources->{$type1};
+
+    return any {
+        $source->relationship_info($_)->{attrs}->{accessor} eq 'multi'
+          && $type2 eq $source->related_source($_)->source_name
+    } $source->relationships;
 }
 
-=head2 type_has_fields $source_name, \@column_names
+=head2 type_has_fields $type, \@fields
 
 =cut
 
@@ -148,7 +156,7 @@ sub type_has_fields {
     my ($self, $type, $fields) = @_;
 
     if ( my $source = $self->sources->{$type} ) {
-        return 1 unless grep $source->has_column($_), @$fields;
+        return all { $source->has_column($_) } @$fields;
     }
     return 0;
 }
