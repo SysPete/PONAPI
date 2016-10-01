@@ -25,6 +25,24 @@ Or pass in the name of your schema class plus connect info:
     connect_info => \@connect_info,
   );
 
+=head1 CAVEATS
+
+The JSON API specification describes "Resource Objects" thus:
+
+  "Resource objects" appear in a JSON API document to represent resources.
+
+  A resource object MUST contain at least the following top-level members:
+ 
+    * id
+    * type
+
+The C<id> is no problem when we have a table using integer surrogate keys
+for the primary key  but causes pain when we have multi-column primary keys.
+This is not yet addressed. So...
+
+B<WARNING:> Tables with multi-column primary keys are currently not accessible
+via PONAPI. This includes many to many "link" tables.
+
 =head1 ATTRIBUTES
 
 =head1 connect_info
