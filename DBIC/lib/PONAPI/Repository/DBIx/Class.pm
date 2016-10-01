@@ -5,23 +5,71 @@ use Moose;
 
 our $VERSION = 0.001;
 use List::Util 1.33 qw(all);
+use Module::Runtime qw(use_module);
 use PONAPI::Constants;
 use PONAPI::Exception;
 
 with 'PONAPI::Repository';
 
+=head1 SYNOPSIS
+
+Pass in a connected schema:
+
+  my $schema = MyApp::Schema->connect(...);
+  my $repository = PONAPI::Repository::DBIx::Class->new( schema => $schema );
+
+Or pass in the name of your schema class plus connect info:
+
+  my $repository = PONAPI::Repository::DBIx::Class->new(
+    schema_class => 'MyApp::Schema',
+    connect_info => \@connect_info,
+  );
+
 =head1 ATTRIBUTES
+
+=head1 connect_info
+
+Array reference of args to passed to L<DBIx::Class::Schema/connect>.
+
+Can also be passed a simple scalar in case you are using
+L<DBIx::Class::Schema::Config> to manage you database connections.
+
+=cut
+
+has connect_info => (
+    is  => 'ro',
+    isa => union( [ 'ArrayRef', 'Str' ] ),
+);
 
 =head1 schema
 
-A connected L<DBIx::Class::Schema>. Required.
+A connected L<DBIx::Class::Schema>.
 
 =cut
 
 has schema => (
-    is       => 'ro',
-    isa      => 'DBIx::Class::Schema',
-    required => 1,
+    is      => 'ro',
+    isa     => 'DBIx::Class::Schema',
+    lazy    => 1,
+    default => sub {
+        my $self = shift;
+        return use_module( $self->schema_class )->connect(
+            ref( $self->connect_info )
+            ? @{ $self->connect_info }  # array ref
+            : $self->connect_info       # scalar
+        );
+    },
+);
+
+=head2 schema_class
+
+The name of the L<DBIx::Class::Schema> class to use.
+
+=cut
+
+has schema_class => (
+    is  => 'ro',
+    isa => 'ClassName',
 );
 
 =head2 sources
@@ -48,7 +96,6 @@ has sources => (
             map { $_ => $self->schema->source($_) } $self->schema->sources
         };
     },
-    clearer => 'clear_sources',
 );
 
 =head1 METHODS
@@ -157,7 +204,6 @@ Required args:
 sub retrieve_all {
     my ( $self, %args ) = @_;
 
-
     my $attrs = {
         $args{page} ? %{ $args{page} } : (),
         result_class => 'DBIx::Class::ResultClass::HashRefInflator',
@@ -176,8 +222,18 @@ sub retrieve_all {
         }
     }
 
-    my $rset =
+    my $result_source = $self->sources( $args{type} );
+
+    my %relations = map { $_ => 1 } $result_source->relationships;
+
+    my @columns = map { "me.$_" } grep { !$relations{$_} }
+      $args{fields} ? @{ $args{fields} } : $result_source->columns;
+
+    my $resultset =
       $self->schema->resultset( $args{type} )->search( $args{filter}, $attrs );
+
+
+    while ( my $result
 
     $self->_add_resources( rset => $rset, %args );
 }
