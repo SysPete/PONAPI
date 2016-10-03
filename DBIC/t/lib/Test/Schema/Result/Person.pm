@@ -33,8 +33,15 @@ __PACKAGE__->add_columns(
 __PACKAGE__->set_primary_key("people_id");
 
 __PACKAGE__->has_many(
-    articles => 'Test::Schema::Result::Article',
-    'articles_id'
+    comments => 'Test::Schema::Result::Comment',
+    'people_id'
 );
+
+__PACKAGE__->has_many(
+    article_authors => 'Test::Schema::Result::ArticleAuthor',
+    'people_id'
+);
+
+__PACKAGE__->many_to_many( articles => 'article_authors', 'article' );
 
 1;

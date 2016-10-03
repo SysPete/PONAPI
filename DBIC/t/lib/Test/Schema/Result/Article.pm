@@ -37,17 +37,16 @@ __PACKAGE__->add_columns(
         default_value => "pending approval",
         size          => 10,
     },
-    authors_id => {
-        data_type => "integer",
-    },
 );
 
 __PACKAGE__->set_primary_key("articles_id");
 
-__PACKAGE__->belongs_to(
-    author => 'Test::Schema::Result::Person',
-    { 'foreign.people_id' => 'self.authors_id' },
+__PACKAGE__->has_many(
+    article_authors => 'Test::Schema::Result::ArticleAuthor',
+    'articles_id'
 );
+
+__PACKAGE__->many_to_many( authors => 'article_authors', 'person' );
 
 __PACKAGE__->has_many(
     comments => 'Test::Schema::Result::Comment',

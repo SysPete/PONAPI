@@ -10,6 +10,7 @@ use Moose::Util::TypeConstraints qw(union);
 use Package::Stash;     # for introspecting m2m
 use PONAPI::Constants;
 use PONAPI::Exception;
+use PONAPI::Repository::DBIx::Class::Type;
 
 with 'PONAPI::Repository';
 
@@ -108,28 +109,42 @@ has types => (
         my $self = shift;
         my $schema = $self->schema;
 
-        my $sources;
+        my $types;
 
         foreach my $source_name ( $schema->sources ) {
-            my $source = $schema->source($_);
+            my $source = $schema->source($source_name);
 
-            my @pks = $souce->primary_columns;
+            my @pks = $source->primary_columns;
+            if ( @pks > 1 ) {
+                warn "Multi-column Primary Keys not currently supported. Skipping: $source";
+                next;
+            }
+            elsif ( @pks == 0 ) {
+                warn "Tables with no Primary Key not currently supported. Skipping: $source";
+                next;
+            }
 
-            # FIXME: we only support result classes with a single col PK
-            next unless @pks == 1;
+            my $type = PONAPI::Repository::DBIx::Class::Type->new(
+                result_source => $source,
+            );
 
-            my @columns = $source->columns;
+            if ( $type->has_field('id') ) {
+                warn "Column/relationship found named 'id' which is not a PK. Skipping: $source";
+                warn "See: http://jsonapi.org/format/#document-resource-object-fields";
+                next;
+            }
+
+            if ( $type->has_field('type') ) {
+                warn "Column/relationship found named 'type'. Skipping: $source";
+                warn "See: http://jsonapi.org/format/#document-resource-object-fields";
+                next;
+            }
 
 
-            $sources->{$source} = {
-                attributes  => [],
-                relations   => [],
-                one_to_many => [],
-                id          => $pks[0],
-            };
+            $types->{$source_name} = $type;
         }
 
-        return $sources;
+        return $types;
     },
 );
 
@@ -154,9 +169,6 @@ sub BUILD {
 
     PONAPI::Exception->throw( message => "$@", sql => 1, )
       unless $ok;
-
-      use DDP;
-      p $self->sources;
 }
 
 =head2 resultset
@@ -179,7 +191,7 @@ Returns true if the schema has a result source with name C<$type>.
 
 sub has_type {
     my ( $self, $type ) = @_;
-    exists $self->sources->{$type};
+    exists $self->types->{$type};
 }
 
 =head2 has_relationship $source_name, $rel
@@ -191,8 +203,8 @@ Returns true if result source C<$source_name> has a relationship named C<$rel>.
 sub has_relationship {
     my ( $self, $source_name, $rel ) = @_;
 
-    return $self->sources->{$source_name}
-      && $self->sources->{$source_name}->has_relationship($rel) ? 1 : 0;
+    return $self->types->{$source_name}
+      && $self->types->{$source_name}->has_relationship($rel);
 }
 
 =head2 has_one_to_many_relationship $source_name, $rel
@@ -206,9 +218,8 @@ and also checks that the relationship accessor is C<multi>
 sub has_one_to_many_relationship {
     my ( $self, $source_name, $rel ) = @_;
 
-    return $self->has_relationship( $source_name, $rel )
-      && $self->sources->{$source_name}->relationship_info($rel)->{attrs}
-      ->{accessor} eq 'multi' ? 1 : 0;
+    return $self->types->{$source_name}
+      && $self->types->{$source_name}->has_one_to_many_relationship($rel);
 }
 
 =head2 type_has_fields $type, \@fields
@@ -221,10 +232,8 @@ if B<all> all elements in the arrayref are attributes of type.
 sub type_has_fields {
     my ($self, $type, $fields) = @_;
 
-    if ( my $source = $self->sources->{$type} ) {
-        return all { $source->has_column($_) } @$fields;
-    }
-    return 0;
+    return $self->types->{$type}
+      && $self->types->{$type}->has_fields($fields);
 }
 
 =head2 retrieve_all %args

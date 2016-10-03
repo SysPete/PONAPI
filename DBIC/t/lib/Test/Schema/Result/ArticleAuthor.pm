@@ -1,32 +1,31 @@
 use utf8;
 
-package Test::Schema::Result::Comment;
+package Test::Schema::Result::ArticleAuthor;
 
 use strict;
 use warnings;
 
 use base 'DBIx::Class::Core';
 
-__PACKAGE__->table("comments");
+__PACKAGE__->table("article_authors");
 
 __PACKAGE__->add_columns(
-    comments_id => {
+    article_authors_id => {
         data_type         => "integer",
         is_auto_increment => 1,
     },
-    body => {
+    articles_id => {
         data_type     => "text",
         default_value => "",
-    },
-    articles_id => {
-        data_type => "integer",
     },
     people_id => {
         data_type => "integer",
     },
 );
 
-__PACKAGE__->set_primary_key("comments_id");
+__PACKAGE__->set_primary_key("article_authors_id");
+
+__PACKAGE__->add_unique_constraint(['articles_id', 'people_id']);
 
 __PACKAGE__->belongs_to(
     article => 'Test::Schema::Result::Article',
@@ -34,7 +33,7 @@ __PACKAGE__->belongs_to(
 );
 
 __PACKAGE__->belongs_to(
-    author => 'Test::Schema::Result::Person',
+    person => 'Test::Schema::Result::Person',
     'people_id'
 );
 

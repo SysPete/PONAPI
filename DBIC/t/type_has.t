@@ -10,15 +10,21 @@ BEGIN {
     use_ok('Test::Schema');
 }
 
-my $schema = Test::Schema->connect("DBI:SQLite:dbname=mockdb.sqlite");
+my $schema = Test::Schema->connect("DBI:SQLite:dbname=testdb.sqlite");
 
 my $repository = PONAPI::Repository::DBIx::Class->new( schema => $schema );
+
 isa_ok( $repository, 'PONAPI::Repository::DBIx::Class' );
 
 subtest '... has_type' => sub {
 
     ok $repository->has_type('Article'), "Repository has_type Article is TRUE";
+
+    ok $repository->has_type('ArticleAuthor'),
+      "Repository has_type ArticleAuthor is TRUE";
+
     ok $repository->has_type('Comment'), "Repository has_type Comment is TRUE";
+
     ok $repository->has_type('Person'),  "Repository has_type Person is TRUE";
 
     ok !$repository->has_type('Foo'), "Repository has_type Foo is FALSE";
@@ -26,62 +32,104 @@ subtest '... has_type' => sub {
 
 subtest '... has_relationship' => sub {
 
-    ok $repository->has_relationship( 'Article', 'comments' ),
-      "Article has_relationship comments is TRUE";
-    ok $repository->has_relationship( 'Comment', 'article' ),
-      "Comment has_relationship article is TRUE";
-    ok $repository->has_relationship( 'Article', 'author' ),
-      "Article has_relationship author is TRUE";
+    my %rels = (
+        Article       => [qw/article_authors authors comments/],
+        ArticleAuthor => [qw/article person/],
+        Comment       => [qw/article author/],
+        Person        => [qw/comments article_authors articles/],
+    );
 
-    ok !$repository->has_relationship( 'Comment', 'author' ),
-      "Comment has_relationship author is FALSE";
+    foreach my $type ( sort keys %rels ) {
+        foreach my $rel ( @{ $rels{$type} } ) {
+        ok $repository->has_relationship( $type, $rel ),
+          "$type has_relationship $rel is TRUE";
+      }
+    }
+
+    ok !$repository->has_relationship( 'Article', 'articles_id' ),
+      "Article has_relationship articles_id is FALSE";
+
+    ok !$repository->has_relationship( 'Article', 'title' ),
+      "Article has_relationship title is FALSE";
+
+    ok !$repository->has_relationship( 'Article', 'foo' ),
+      "Article has_relationship foo is FALSE";
+
     ok !$repository->has_relationship( 'Foo', 'author' ),
       "Foo has_relationship author is FALSE";
 };
 
 subtest '... has_one_to_many_relationship' => sub {
 
-    ok $repository->has_one_to_many_relationship( 'Article', 'comments' ),
-      "Article has_one_to_many_relationship comments is TRUE";
-    ok $repository->has_one_to_many_relationship( 'Person', 'articles' ),
-      "Person has_one_to_many_relationship articles is TRUE";
+    my %true = (
+        Article       => [qw/article_authors authors comments/],
+        Person        => [qw/comments article_authors articles/],
+    );
 
-    ok !$repository->has_one_to_many_relationship( 'Article', 'author' ),
-      "Article has_one_to_many_relationship author is FALSE";
-    ok !$repository->has_one_to_many_relationship( 'Article', 'foo' ),
-      "Article has_one_to_many_relationship foo is FALSE";
+    my %false = (
+        ArticleAuthor => [qw/article person/],
+        Comment       => [qw/article author/],
+    );
+
+    foreach my $type ( sort keys %true ) {
+        foreach my $rel ( @{ $true{$type} } ) {
+        ok $repository->has_one_to_many_relationship( $type, $rel ),
+          "$type has_one_to_many_relationship $rel is TRUE";
+      }
+    }
+
+    foreach my $type ( sort keys %false ) {
+        foreach my $rel ( @{ $false{$type} } ) {
+        ok !$repository->has_one_to_many_relationship( $type, $rel ),
+          "$type has_one_to_many_relationship $rel is FALSE";
+      }
+    }
+
+    ok !$repository->has_one_to_many_relationship( 'Comment', 'foo' ),
+      "Comment has_one_to_many_relationship foo is FALSE";
+
+    ok !$repository->has_one_to_many_relationship( 'Foo', 'author' ),
+      "Foo has_one_to_many_relationship author is FALSE";
 };
 
 subtest '... type_has_fields' => sub {
+    plan tests => 17;
 
-    ok $repository->type_has_fields(
-        'Person', [ 'people_id', 'name', 'age', 'gender' ]
-      ),
-      "Person type_has_fields people_id, name, age, gender is TRUE";
+    my %fields = (
+        true => [
+            [qw/Article title body created updated status article_authors authors comments/],
+            [qw/ArticleAuthor article person/],
+            [qw/Person name age gender comments article_authors articles/],
+            [qw/Comment body article author/],
+            [qw/Person name age gender comments article_authors articles/],
+            [qw/Person name/],
+        ],
+        false => [
+            [qw/Article articles_id/],
+            [qw/Article authors_id/],
+            [qw/ArticleAuthor article_authors_id/],
+            [qw/ArticleAuthor articles_id/],
+            [qw/ArticleAuthor people_id/],
+            [qw/Comment comments_id/],
+            [qw/Comment articles_id/],
+            [qw/Comment people_id/],
+            [qw/Person people_id/],
+            [qw/Person foo/],
+            [qw/Person name foo/],
+        ],
+    );
 
-    ok $repository->type_has_fields(
-        'Person', [ 'name' ]
-      ),
-      "Person type_has_fields name is TRUE";
+    foreach my $a ( @{ $fields{true} } ) {
+        my $source = shift @$a;
+        ok $repository->type_has_fields( $source, $a ),
+          "$source type_has_fields " . join( ", ", @$a ) . " is TRUE";
+    }
 
-    ok !$repository->type_has_fields(
-        'Person', [ 'people_id', 'name', 'age', 'gender', 'foo' ]
-      ),
-      "Person type_has_fields people_id, name, age, gender, foo is FALSE";
-
-    ok $repository->type_has_fields(
-        'Article',
-        [
-            'articles_id', 'title',  'body', 'created',
-            'updated',     'status', 'authors_id'
-        ]
-      ),
-      "Article type_has_fields articles_id, title, body, created, updated ,status, authors_id is TRUE";
-
-    ok $repository->type_has_fields(
-        'Comment', [ 'comments_id', 'body', 'articles_id' ]
-      ),
-      "Comment type_has_fields comments_id, body, articles_id is TRUE";
+    foreach my $a ( @{ $fields{false} } ) {
+        my $source = shift @$a;
+        ok !$repository->type_has_fields( $source, $a ),
+          "$source type_has_fields " . join( ", ", @$a ) . " is FALSE";
+    }
 
 };
 
