@@ -6,6 +6,8 @@ use Moose;
 our $VERSION = 0.001;
 use List::Util 1.33 qw(all);
 use Module::Runtime qw(use_module);
+use Moose::Util::TypeConstraints qw(union);
+use Package::Stash;     # for introspecting m2m
 use PONAPI::Constants;
 use PONAPI::Exception;
 
@@ -90,29 +92,44 @@ has schema_class => (
     isa => 'ClassName',
 );
 
-=head2 sources
+=head2 types
 
 Hash reference with the L</schema>'s result source names as keys and the
 related L<DBIx::Class::ResultSource> objects as values. This is lazy-loaded
 when needed.
 
-=over
-
-=item clearer: clear_sources
-
-=back
-
 =cut
 
-has sources => (
+has types => (
     is      => 'ro',
     isa     => 'HashRef',
     lazy    => 1,
     default => sub {
         my $self = shift;
-        return +{
-            map { $_ => $self->schema->source($_) } $self->schema->sources
-        };
+        my $schema = $self->schema;
+
+        my $sources;
+
+        foreach my $source_name ( $schema->sources ) {
+            my $source = $schema->source($_);
+
+            my @pks = $souce->primary_columns;
+
+            # FIXME: we only support result classes with a single col PK
+            next unless @pks == 1;
+
+            my @columns = $source->columns;
+
+
+            $sources->{$source} = {
+                attributes  => [],
+                relations   => [],
+                one_to_many => [],
+                id          => $pks[0],
+            };
+        }
+
+        return $sources;
     },
 );
 
@@ -137,6 +154,9 @@ sub BUILD {
 
     PONAPI::Exception->throw( message => "$@", sql => 1, )
       unless $ok;
+
+      use DDP;
+      p $self->sources;
 }
 
 =head2 resultset
@@ -251,9 +271,9 @@ sub retrieve_all {
       $self->schema->resultset( $args{type} )->search( $args{filter}, $attrs );
 
 
-    while ( my $result
+      #while ( my $result
 
-    $self->_add_resources( rset => $rset, %args );
+      #$self->_add_resources( rset => $rset, %args );
 }
 
 sub retrieve {
