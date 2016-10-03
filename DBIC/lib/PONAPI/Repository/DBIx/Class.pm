@@ -114,6 +114,9 @@ has types => (
         foreach my $source_name ( $schema->sources ) {
             my $source = $schema->source($source_name);
 
+            # TODO: maybe most of this should be moved to
+            # PONAPI::Repository::DBIx::Class::Type BUILDARGS and have it
+            # throw exceptions. Laterz.
             my @pks = $source->primary_columns;
             if ( @pks > 1 ) {
                 warn "Multi-column Primary Keys not currently supported. Skipping: $source";
@@ -250,6 +253,8 @@ Required args:
 
 sub retrieve_all {
     my ( $self, %args ) = @_;
+    my $doc  = $args{document};
+    my $type = $args{type};
 
     my $attrs = {
         $args{page} ? %{ $args{page} } : (),
@@ -258,7 +263,7 @@ sub retrieve_all {
 
     if ( $args{include} ) {
         foreach my $rel ( @{ $args{include} } ) {
-            if ( $args{fields} && $args{fields}->{$rel} ) {
+            if ( $args{fields}->{$rel} ) {
                 push @{ $attrs->{join} }, $rel;
                 push @{ $attrs->{'+columns'} },
                   map { "$rel.$_" } @{ $args{fields}->{$rel} };
@@ -269,16 +274,32 @@ sub retrieve_all {
         }
     }
 
-    my $result_source = $self->sources( $args{type} );
+    my $table         = $self->types->{ $type };
+    my @columns       = @{ $table->attributes };
+    my @relationships = @{ $table->relationships };
+    my $pk            = $table->primary_key;
+    push @columns, $pk;
 
-    my %relations = map { $_ => 1 } $result_source->relationships;
+    if ( $args{fields}->{ $type } ) {
+        # filter columns and/or relationships
+        my %fields = map { $_ => 1 } @{ $args{fields}->{ $type } };
+        @columns       = grep { $fields{$_} } @columns;
+        @relationships = grep { $fields{$_} } @relationships;
+    }
 
-    my @columns = map { "me.$_" } grep { !$relations{$_} }
-      $args{fields} ? @{ $args{fields} } : $result_source->columns;
+    # qualify column names with 'me'
+    $attrs->{columns} = [ map { "me.$_" } @columns ];
 
     my $resultset =
-      $self->schema->resultset( $args{type} )->search( $args{filter}, $attrs );
+      $self->schema->resultset( $type )->search( $args{filter}, $attrs );
 
+    while ( my $result = $resultset->next ) {
+        my $id = delete $result->{$pk};
+        my $resource = $doc->add_resource( type => $type, id => $id );
+        $resource->add_attribute( $_ => $result->{$_} ) for keys %$result;
+        use DDP;
+        p $result;
+    }
 
       #while ( my $result
 
@@ -287,7 +308,8 @@ sub retrieve_all {
 
 sub retrieve {
     my ( $self, %args ) = @_;
-    $args{filter}{id} = delete $args{id};
+    my $pk = $self->types->{ $args{type} }->primary_key;
+    $args{filter}{$pk} = delete $args{id};
     $self->retrieve_all(%args);
 }
 

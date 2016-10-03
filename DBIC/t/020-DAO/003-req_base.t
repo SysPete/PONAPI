@@ -11,7 +11,7 @@ BEGIN {
     use_ok('Test::Schema');
 }
 
-my $schema = Test::Schema->connect("DBI:SQLite:dbname=mockdb.sqlite");
+my $schema = Test::Schema->connect("DBI:SQLite:dbname=testdb.sqlite");
 
 my $repository = PONAPI::Repository::DBIx::Class->new(schema => $schema);
 isa_ok($repository, 'PONAPI::Repository::DBIx::Class');
@@ -38,6 +38,9 @@ subtest '... providing a request base string' => sub {
     my $qr_prefix = qr/^$REQ_BASE/;
 
     ok($doc->{links}, '... the document has a `links` key');
+
+    use DDP;
+    p $doc;
 };
 done_testing;
 __END__
