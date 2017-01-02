@@ -1,18 +1,50 @@
 package PONAPI::Repository::DBIx::Class;
+
 # ABSTRACT: DBIx::Class respository layer for PONAPI
 #
-use Moose;
 
 our $VERSION = 0.001;
+use Carp qw(croak);
+use Class::Method::Modifiers qw(install_modifier);
 use List::Util 1.33 qw(all);
 use Module::Runtime qw(use_module);
 use Moose::Util::TypeConstraints qw(union);
-use Package::Stash;     # for introspecting m2m
 use PONAPI::Constants;
 use PONAPI::Exception;
-use PONAPI::Repository::DBIx::Class::Type;
+use PONAPI::Repository::DBIx::Class::Table;
 
+# many_to_many modifier cargo-culted from DBIx::Class::IntrospectableM2M
+# with some local changes.
+# Perhaps there is a better way to do this but it does at least work.
+use DBIx::Class::Relationship::ManyToMany '';
+install_modifier "DBIx::Class::Relationship::ManyToMany", "after",
+  "many_to_many", sub {
+
+    my $class = shift;
+    $class->mk_classdata( _ponapi_m2m_metadata => {} );
+    my ( $meth_name, $link, $far_side ) = @_;
+    my $store = $class->_ponapi_m2m_metadata;
+    warn("You are overwritting another relationship's metadata")
+      if exists $store->{$meth_name};
+
+    my $attrs = {
+        accessor         => 'many_to_many',
+        relation         => $link,           #"link" table or immediate relation
+        foreign_relation => $far_side,       #'far' table or foreign relation
+        ( @_ > 3 ? ( attrs => $_[3] ) : () ),    #only store if exist
+        rs_method     => "${meth_name}_rs",            #for completeness..
+        add_method    => "add_to_${meth_name}",
+        set_method    => "set_${meth_name}",
+        remove_method => "remove_from_${meth_name}",
+    };
+
+    #inheritable data workaround
+    $class->_ponapi_m2m_metadata( { $meth_name => $attrs, %$store } );
+  };
+
+use Moose;
 with 'PONAPI::Repository';
+use namespace::autoclean;
 
 =head1 SYNOPSIS
 
@@ -58,8 +90,9 @@ L<DBIx::Class::Schema::Config> to manage you database connections.
 =cut
 
 has connect_info => (
-    is  => 'ro',
-    isa => union( [ 'ArrayRef', 'Str' ] ),
+    is       => 'ro',
+    isa      => union( [ 'ArrayRef', 'Str' ] ),
+    required => 1,
 );
 
 =head1 schema
@@ -74,10 +107,12 @@ has schema => (
     lazy    => 1,
     default => sub {
         my $self = shift;
+        use_module( $self->schema_class );
+
         return use_module( $self->schema_class )->connect(
             ref( $self->connect_info )
-            ? @{ $self->connect_info }  # array ref
-            : $self->connect_info       # scalar
+            ? @{ $self->connect_info }    # array ref
+            : $self->connect_info         # scalar
         );
     },
 );
@@ -89,8 +124,9 @@ The name of the L<DBIx::Class::Schema> class to use.
 =cut
 
 has schema_class => (
-    is  => 'ro',
-    isa => 'ClassName',
+    is       => 'ro',
+    isa      => 'ClassName',
+    required => 1,
 );
 
 =head2 types
@@ -101,53 +137,34 @@ when needed.
 
 =cut
 
-has types => (
+has tables => (
     is      => 'ro',
     isa     => 'HashRef',
     lazy    => 1,
     default => sub {
-        my $self = shift;
+        my $self   = shift;
         my $schema = $self->schema;
 
-        my $types;
+        my $tables = {};
 
-        foreach my $source_name ( $schema->sources ) {
+        foreach my $source_name ( sort $schema->sources ) {
             my $source = $schema->source($source_name);
 
-            # TODO: maybe most of this should be moved to
-            # PONAPI::Repository::DBIx::Class::Type BUILDARGS and have it
-            # throw exceptions. Laterz.
-            my @pks = $source->primary_columns;
-            if ( @pks > 1 ) {
-                warn "Multi-column Primary Keys not currently supported. Skipping: $source";
-                next;
-            }
-            elsif ( @pks == 0 ) {
-                warn "Tables with no Primary Key not currently supported. Skipping: $source";
-                next;
-            }
-
-            my $type = PONAPI::Repository::DBIx::Class::Type->new(
-                result_source => $source,
-            );
-
-            if ( $type->has_field('id') ) {
-                warn "Column/relationship found named 'id' which is not a PK. Skipping: $source";
-                warn "See: http://jsonapi.org/format/#document-resource-object-fields";
-                next;
-            }
-
-            if ( $type->has_field('type') ) {
-                warn "Column/relationship found named 'type'. Skipping: $source";
-                warn "See: http://jsonapi.org/format/#document-resource-object-fields";
-                next;
-            }
-
-
-            $types->{$source_name} = $type;
+            use DDP;
+#            eval {
+                my $table = PONAPI::Repository::DBIx::Class::Table->new(
+                    source_name   => $source_name,
+                    result_source => $source,
+                );
+                $tables->{$source_name} = $table;
+#                1;
+#            } or do {
+#                my $err = $@ || "Zombie Error";
+#                warn "Unable to add result class \"$source_name\": $err";
+#            };
         }
 
-        return $types;
+        return $tables;
     },
 );
 
@@ -161,7 +178,7 @@ Use L<PONAPI::Exception/throw> as L<DBIx::Class::Schema/exception_action>.
 
 sub BUILD {
     my $self = shift;
-    my $ok = eval {
+    my $ok   = eval {
         $self->schema->exception_action(
             sub {
                 PONAPI::Exception->throw( message => "@_", sql => 1, );
@@ -173,6 +190,25 @@ sub BUILD {
     PONAPI::Exception->throw( message => "$@", sql => 1, )
       unless $ok;
 }
+
+=head2 BUILDARGS
+
+If L</schema> is passed as a constructor argument we 
+=cut
+
+around BUILDARGS => sub {
+    my $orig = shift;
+    my $self = shift;
+
+    my %args = @_ == 1 && ref $_[0] eq 'HASH' ? %{ ref $_[0] } : @_;
+
+    if ( my $schema = delete $args{schema} ) {
+        $args{schema_class} = ref($schema);
+        $args{connect_info} = $schema->storage->connect_info;
+    }
+
+    $self->$orig(%args);
+};
 
 =head2 resultset
 
@@ -194,7 +230,7 @@ Returns true if the schema has a result source with name C<$type>.
 
 sub has_type {
     my ( $self, $type ) = @_;
-    exists $self->types->{$type};
+    exists $self->tables->{$type};
 }
 
 =head2 has_relationship $source_name, $rel
@@ -206,8 +242,8 @@ Returns true if result source C<$source_name> has a relationship named C<$rel>.
 sub has_relationship {
     my ( $self, $source_name, $rel ) = @_;
 
-    return $self->types->{$source_name}
-      && $self->types->{$source_name}->has_relationship($rel);
+    return $self->tables->{$source_name}
+      && $self->tables->{$source_name}->has_relationship($rel);
 }
 
 =head2 has_one_to_many_relationship $source_name, $rel
@@ -221,8 +257,8 @@ and also checks that the relationship accessor is C<multi>
 sub has_one_to_many_relationship {
     my ( $self, $source_name, $rel ) = @_;
 
-    return $self->types->{$source_name}
-      && $self->types->{$source_name}->has_one_to_many_relationship($rel);
+    return $self->tables->{$source_name}
+      && $self->tables->{$source_name}->has_one_to_many_relationship($rel);
 }
 
 =head2 type_has_fields $type, \@fields
@@ -233,10 +269,10 @@ if B<all> all elements in the arrayref are attributes of type.
 =cut
 
 sub type_has_fields {
-    my ($self, $type, $fields) = @_;
+    my ( $self, $type, $fields ) = @_;
 
-    return $self->types->{$type}
-      && $self->types->{$type}->has_fields($fields);
+    return $self->tables->{$type}
+      && $self->tables->{$type}->has_fields($fields);
 }
 
 =head2 retrieve_all %args
@@ -261,7 +297,12 @@ sub retrieve_all {
         result_class => 'DBIx::Class::ResultClass::HashRefInflator',
     };
 
-    if ( $args{include} ) {
+    my $table         = $self->tables->{$type};
+    my @columns       = $table->attributes;
+    my @relationships = $table->relationships;
+    my $pk            = $table->primary_key;
+
+    if ( @{ $args{include} } ) {
         foreach my $rel ( @{ $args{include} } ) {
             if ( $args{fields}->{$rel} ) {
                 push @{ $attrs->{join} }, $rel;
@@ -273,57 +314,80 @@ sub retrieve_all {
             }
         }
     }
+    else {
+        # http://jsonapi.org/format/#fetching-includes
+        # An endpoint MAY return resources related to the primary data by
+        # default.
+        #
+        # So since we have not been instructed otherwise we'll prefetch all.
+        $attrs->{prefetch} = \@relationships;
+    }
 
-    my $table         = $self->types->{ $type };
-    my @columns       = @{ $table->attributes };
-    my @relationships = @{ $table->relationships };
-    my $pk            = $table->primary_key;
-    push @columns, $pk;
+    if ( $args{fields}->{$type} ) {
 
-    if ( $args{fields}->{ $type } ) {
         # filter columns and/or relationships
-        my %fields = map { $_ => 1 } @{ $args{fields}->{ $type } };
+        my %fields = map { $_ => 1 } @{ $args{fields}->{$type} };
         @columns       = grep { $fields{$_} } @columns;
         @relationships = grep { $fields{$_} } @relationships;
     }
 
-    # qualify column names with 'me'
-    $attrs->{columns} = [ map { "me.$_" } @columns ];
+    use DDP;
+    p @relationships;
+    p %args;
+    p $attrs;
 
-    my $resultset =
-      $self->schema->resultset( $type )->search( $args{filter}, $attrs );
+    # not sure what different things we might find in $args{filter} yet
+    # but one thing we need is to make sure columns in main table are
+    # prefix with 'me.' to avoid ambiguous column name issues.
+
+    my %filter = map {
+        $table->result_source->has_column($_)
+          ? "me.$_"
+          : $_ => $args{filter}->{$_}
+    } keys %{ $args{filter} };
+
+    p %filter;
+
+    $attrs->{columns} = [ map { "me.$_" } @columns, $pk ];
+
+    my $resultset = $self->schema->resultset($type)->search( \%filter, $attrs );
 
     while ( my $result = $resultset->next ) {
+        p $result;
         my $id = delete $result->{$pk};
         my $resource = $doc->add_resource( type => $type, id => $id );
-        $resource->add_attribute( $_ => $result->{$_} ) for keys %$result;
-        use DDP;
-        p $result;
+        $resource->add_attribute( $_ => $result->{$_} ) for @columns;
+        $resource->add_self_link;
+
+        foreach my $rel (@relationships) {
+            next unless $result->{$rel};
+            if ( @{ $result->{$rel} } ) {
+            }
+
+            # ...
+        }
     }
-
-      #while ( my $result
-
-      #$self->_add_resources( rset => $rset, %args );
 }
 
 sub retrieve {
     my ( $self, %args ) = @_;
-    my $pk = $self->types->{ $args{type} }->primary_key;
+    my $pk = $self->tables->{ $args{type} }->primary_key;
     $args{filter}{$pk} = delete $args{id};
     $self->retrieve_all(%args);
 }
 
 sub retrieve_relationships {
     my ( $self, %args ) = @_;
-    my ($type, $rel_type, $doc, $page) = @args{qw/type rel_type document page/};
+    my ( $type, $rel_type, $doc, $page ) =
+      @args{qw/type rel_type document page/};
 
     $self->_validate_page($page) if $page;
 
     my $sort = $args{sort} || [];
-    if ( @$sort ) {
+    if (@$sort) {
         PONAPI::Exception->throw(
-            message => "You can only sort by id in retrieve_relationships"
-        ) if @$sort > 1 || $sort->[0] !~ /\A(-)?id\z/;
+            message => "You can only sort by id in retrieve_relationships" )
+          if @$sort > 1 || $sort->[0] !~ /\A(-)?id\z/;
 
         my $desc = !!$1;
 
@@ -331,18 +395,19 @@ sub retrieve_relationships {
         my $relation_obj = $table_obj->RELATIONS->{$rel_type};
         my $id_column    = $relation_obj->REL_ID_COLUMN;
 
-        @$sort = ($desc ? '-' : '') . $id_column;
+        @$sort = ( $desc ? '-' : '' ) . $id_column;
     }
 
     my $rels = $self->_find_resource_relationships(
         %args,
+
         # No need to fetch other relationship types
-        fields => { $type => [ $rel_type ] },
+        fields => { $type => [$rel_type] },
     );
 
     return unless @{ $rels || [] };
 
-    $doc->add_resource( %$_ ) for @$rels;
+    $doc->add_resource(%$_) for @$rels;
 
     $self->_add_pagination_links(
         page     => $page,
@@ -353,7 +418,8 @@ sub retrieve_relationships {
 
 sub retrieve_by_relationship {
     my ( $self, %args ) = @_;
-    my ( $doc, $type, $rel_type, $fields, $include ) = @args{qw< document type rel_type fields include >};
+    my ( $doc, $type, $rel_type, $fields, $include ) =
+      @args{qw< document type rel_type fields include >};
 
     my $sort = delete $args{sort} || [];
     my $page = delete $args{page};
@@ -364,14 +430,15 @@ sub retrieve_by_relationship {
     # table, and page needs to happen after sorting
     my $rels = $self->_find_resource_relationships(
         %args,
+
         # No need to fetch other relationship types
-        fields => { $type => [ $rel_type ] },
+        fields => { $type => [$rel_type] },
     );
 
     return unless @$rels;
 
     my $q_type = $rels->[0]{type};
-    my $q_ids  = [ map { $_->{id} } @{$rels} ];
+    my $q_ids = [ map { $_->{id} } @{$rels} ];
 
     my $stmt = $self->tables->{$q_type}->select_stmt(
         type   => $q_type,
@@ -396,15 +463,16 @@ sub create {
     my ( $self, %args ) = @_;
     my ( $doc, $type, $data ) = @args{qw< document type data >};
 
-    my $attributes    = $data->{attributes} || {};
+    my $attributes    = $data->{attributes}           || {};
     my $relationships = delete $data->{relationships} || {};
 
     $self->schema->txn_do(
         sub {
             my $result = $self->resultset($type)->create($attributes);
             foreach my $rel ( keys %$relationships ) {
-                $result->create_related($rel, $relationships->{$rel}->{data});
+                $result->create_related( $rel, $relationships->{$rel}->{data} );
             }
+
             # Spec says we MUST return this, both here and in the Location
             # header; the DAO takes care of the header, but we need to put it
             # in the doc
@@ -419,7 +487,7 @@ sub _create_relationships {
     my ( $self, %args ) = @_;
     my ( $type, $id, $rel_type, $data ) = @args{qw< type id rel_type data >};
 
-    my $table_obj     = $self->tables->{$type};
+    my $table_obj    = $self->tables->{$type};
     my $relation_obj = $table_obj->RELATIONS->{$rel_type};
 
     my $rel_table = $relation_obj->TABLE;
@@ -429,13 +497,14 @@ sub _create_relationships {
     my $rel_id_column = $relation_obj->REL_ID_COLUMN;
 
     my @all_values;
-    foreach my $orig ( @$data ) {
-        my $relationship = { %$orig };
-        my $data_type = delete $relationship->{type};
+    foreach my $orig (@$data) {
+        my $relationship = {%$orig};
+        my $data_type    = delete $relationship->{type};
 
         if ( $data_type ne $key_type ) {
             PONAPI::Exception->throw(
-                message          => "Data has type `$data_type`, but we were expecting `$key_type`",
+                message =>
+"Data has type `$data_type`, but we were expecting `$key_type`",
                 bad_request_data => 1,
             );
         }
@@ -446,57 +515,61 @@ sub _create_relationships {
         push @all_values, $relationship;
     }
 
-    my $one_to_one = !$self->has_one_to_many_relationship($type, $rel_type);
+    my $one_to_one = !$self->has_one_to_many_relationship( $type, $rel_type );
 
-    foreach my $values ( @all_values ) {
-        my ($stmt, $return, $extra) = $relation_obj->insert_stmt(
+    foreach my $values (@all_values) {
+        my ( $stmt, $return, $extra ) = $relation_obj->insert_stmt(
             table  => $rel_table,
             values => $values,
         );
 
-        my ($failed, $e);
+        my ( $failed, $e );
         {
             local $@;
-            eval  { $self->_db_execute( $stmt ); 1; }
-            or do {
-                ($failed, $e) = (1, $@||'Unknown error');
+            eval { $self->_db_execute($stmt); 1; } or do {
+                ( $failed, $e ) = ( 1, $@ || 'Unknown error' );
             };
         }
-        if ( $failed ) {
-            if ( $one_to_one && do { local $@; eval { $e->sql_error } } ) {
+        if ($failed) {
+            if (
+                $one_to_one && do {
+                    local $@;
+                    eval { $e->sql_error };
+                }
+              )
+            {
                 # Can't quite do ::Upsert
                 $stmt = $relation_obj->update_stmt(
                     table  => $rel_table,
-                    values => [ %$values ],
+                    values => [%$values],
                     where  => { $id_column => $id },
                     driver => 'sqlite',
                 );
-                $self->_db_execute( $stmt );
+                $self->_db_execute($stmt);
             }
             else {
                 die $e;
             }
-        };
+        }
     }
 
     return PONAPI_UPDATED_NORMAL;
 }
 
 sub create_relationships {
-    my ($self, %args) = @_;
+    my ( $self, %args ) = @_;
 
     my $dbh = $self->dbh;
     $dbh->begin_work;
 
-    my ($ret, $e, $failed);
+    my ( $ret, $e, $failed );
     {
         local $@;
-        eval  { $ret = $self->_create_relationships( %args ); 1; }
-        or do {
-            ($failed, $e) = (1, $@||'Unknown error');
+        eval { $ret = $self->_create_relationships(%args); 1; } or do {
+            ( $failed, $e ) = ( 1, $@ || 'Unknown error' );
         };
     }
-    if ( $failed ) {
+    if ($failed) {
         $dbh->rollback;
         die $e;
     }
@@ -511,15 +584,14 @@ sub update {
     my $dbh = $self->dbh;
     $dbh->begin_work;
 
-    my ($ret, $e, $failed);
+    my ( $ret, $e, $failed );
     {
         local $@;
-        eval  { $ret = $self->_update( %args ); 1 }
-        or do {
-            ($failed, $e) = (1, $@||'Unknown error');
+        eval { $ret = $self->_update(%args); 1 } or do {
+            ( $failed, $e ) = ( 1, $@ || 'Unknown error' );
         };
     }
-    if ( $failed ) {
+    if ($failed) {
         $dbh->rollback;
         die $e;
     }
@@ -531,14 +603,16 @@ sub update {
 sub _update {
     my ( $self, %args ) = @_;
     my ( $type, $id, $data ) = @args{qw< type id data >};
-    my ($attributes, $relationships) = map $_||{}, @{ $data }{qw/ attributes relationships /};
+    my ( $attributes, $relationships ) = map $_ || {},
+      @{$data}{qw/ attributes relationships /};
 
     my $return = PONAPI_UPDATED_NORMAL;
-    if ( %$attributes ) {
+    if (%$attributes) {
         my $table_obj = $self->tables->{$type};
-        # Per the spec, the api behaves *very* differently if ->update does extra things
-        # under the hood.  Case point: the updated column in Articles
-        my ($stmt, $extra_return, $msg) = $table_obj->update_stmt(
+
+# Per the spec, the api behaves *very* differently if ->update does extra things
+# under the hood.  Case point: the updated column in Articles
+        my ( $stmt, $extra_return, $msg ) = $table_obj->update_stmt(
             table  => $type,
             where  => { $table_obj->ID_COLUMN => $id },
             values => $attributes,
@@ -546,7 +620,7 @@ sub _update {
 
         $return = $extra_return if defined $extra_return;
 
-        my $sth = $self->_db_execute( $stmt );
+        my $sth = $self->_db_execute($stmt);
 
         # We had a successful update, but it updated nothing
         if ( !$sth->rows ) {
@@ -564,15 +638,15 @@ sub _update {
 
         # We tried updating the attributes but
         $return = $update_rel_return
-            if $return            == PONAPI_UPDATED_NOTHING
-            && $update_rel_return != PONAPI_UPDATED_NOTHING;
+          if $return == PONAPI_UPDATED_NOTHING
+          && $update_rel_return != PONAPI_UPDATED_NOTHING;
     }
 
     return $return;
 }
 
 sub _update_relationships {
-    my ($self, %args) = @_;
+    my ( $self, %args ) = @_;
     my ( $type, $id, $rel_type, $data ) = @args{qw< type id rel_type data >};
 
     my $table_obj    = $self->tables->{$type};
@@ -585,9 +659,12 @@ sub _update_relationships {
     my $rel_id_column = $relation_obj->REL_ID_COLUMN;
 
     # Let's have an arrayref
-    $data = $data
-            ? ref($data) eq 'HASH' ? [ keys(%$data) ? $data : () ] : $data
-            : [];
+    $data =
+        $data
+      ? ref($data) eq 'HASH'
+          ? [ keys(%$data) ? $data : () ]
+          : $data
+      : [];
 
     # Let's start by clearing all relationships; this way
     # we can implement the SQL below without adding special cases
@@ -596,18 +673,18 @@ sub _update_relationships {
         table => $rel_table,
         where => { $id_column => $id },
     );
-    $self->_db_execute( $stmt );
+    $self->_db_execute($stmt);
 
     my $return = PONAPI_UPDATED_NORMAL;
-    foreach my $insert ( @$data ) {
-        my ($stmt, $insert_return, $extra) = $table_obj->insert_stmt(
+    foreach my $insert (@$data) {
+        my ( $stmt, $insert_return, $extra ) = $table_obj->insert_stmt(
             table  => $rel_table,
             values => {
                 $id_column     => $id,
                 $rel_id_column => $insert->{id},
             },
         );
-        $self->_db_execute( $stmt );
+        $self->_db_execute($stmt);
 
         $return = $insert_return if $insert_return;
     }
@@ -621,15 +698,14 @@ sub update_relationships {
     my $dbh = $self->dbh;
     $dbh->begin_work;
 
-    my ($ret, $e, $failed);
+    my ( $ret, $e, $failed );
     {
         local $@;
-        eval  { $ret = $self->_update_relationships( %args ); 1 }
-        or do {
-            ($failed, $e) = (1, $@||'Unknown error');
+        eval { $ret = $self->_update_relationships(%args); 1 } or do {
+            ( $failed, $e ) = ( 1, $@ || 'Unknown error' );
         };
     }
-    if ( $failed ) {
+    if ($failed) {
         $dbh->rollback;
         die $e;
     }
@@ -641,7 +717,7 @@ sub update_relationships {
 
 sub delete : method {
     my ( $self, %args ) = @_;
-    my ( $type, $id ) = @args{qw< type id >};
+    my ( $type, $id )   = @args{qw< type id >};
 
     $self->resultset($type)->find($id)->delete;
     return;
@@ -653,15 +729,14 @@ sub delete_relationships {
     my $dbh = $self->dbh;
     $dbh->begin_work;
 
-    my ($ret, $e, $failed);
+    my ( $ret, $e, $failed );
     {
         local $@;
-        eval  { $ret = $self->_delete_relationships( %args ); 1 }
-        or do {
-            ($failed, $e) = (1, $@||'Unknown error');
+        eval { $ret = $self->_delete_relationships(%args); 1 } or do {
+            ( $failed, $e ) = ( 1, $@ || 'Unknown error' );
         };
     }
-    if ( $failed ) {
+    if ($failed) {
         $dbh->rollback;
         die $e;
     }
@@ -685,12 +760,13 @@ sub _delete_relationships {
     my $rel_id_column = $relation_obj->REL_ID_COLUMN;
 
     my @all_values;
-    foreach my $resource ( @$data ) {
+    foreach my $resource (@$data) {
         my $data_type = $resource->{type};
 
         if ( $data_type ne $key_type ) {
             PONAPI::Exception->throw(
-                message          => "Data has type `$data_type`, but we were expecting `$key_type`",
+                message =>
+"Data has type `$data_type`, but we were expecting `$key_type`",
                 bad_request_data => 1,
             );
         }
@@ -706,14 +782,14 @@ sub _delete_relationships {
     my $ret = PONAPI_UPDATED_NORMAL;
 
     my $rows_modified = 0;
-    DELETE:
-    foreach my $where ( @all_values ) {
+  DELETE:
+    foreach my $where (@all_values) {
         my $stmt = $relation_obj->delete_stmt(
             table => $table,
             where => $where,
         );
 
-        my $sth = $self->_db_execute( $stmt );
+        my $sth = $self->_db_execute($stmt);
         $rows_modified += $sth->rows;
     }
 
@@ -722,13 +798,11 @@ sub _delete_relationships {
     return $ret;
 }
 
-
 ## --------------------------------------------------------
 
 sub _add_resources {
     my ( $self, %args ) = @_;
-    my ( $doc, $rset, $type ) =
-        @args{qw< document rset type >};
+    my ( $doc, $rset, $type ) = @args{qw< document rset type >};
 
     while ( my $row = $rset->next ) {
         my $id = delete $row->{id};
@@ -736,11 +810,12 @@ sub _add_resources {
         $rec->add_attribute( $_ => $row->{$_} ) for keys %{$row};
         $rec->add_self_link;
 
-        $self->_add_resource_relationships($rec, %args);
+        $self->_add_resource_relationships( $rec, %args );
     }
 
     $self->_add_pagination_links(
         page => $args{page},
+
         #rows => scalar $sth->rows,
         document => $doc,
     ) if $args{page};
@@ -749,17 +824,17 @@ sub _add_resources {
 }
 
 sub _add_pagination_links {
-    my ($self, %args) = @_;
-    my ($page, $rows_fetched, $document) = @args{qw/page rows document/};
+    my ( $self, %args ) = @_;
+    my ( $page, $rows_fetched, $document ) = @args{qw/page rows document/};
     $rows_fetched ||= -1;
 
-    my ($offset, $limit) = @{$page}{qw/offset limit/};
+    my ( $offset, $limit ) = @{$page}{qw/offset limit/};
 
     my %current = %$page;
     my %first = ( %current, offset => 0, );
-    my (%previous, %next);
+    my ( %previous, %next );
 
-    if ( ($offset - $limit) >= 0 ) {
+    if ( ( $offset - $limit ) >= 0 ) {
         %previous = %current;
         $previous{offset} -= $current{limit};
     }
@@ -778,16 +853,17 @@ sub _add_pagination_links {
 }
 
 sub _validate_page {
-    my ($self, $page) = @_;
+    my ( $self, $page ) = @_;
 
     exists $page->{limit}
-        or PONAPI::Exception->throw(message => "Limit missing for `page`");
+      or PONAPI::Exception->throw( message => "Limit missing for `page`" );
 
     $page->{limit} =~ /\A[0-9]+\z/
-        or PONAPI::Exception->throw(message => "Bad limit value ($page->{limit}) in `page`");
+      or PONAPI::Exception->throw(
+        message => "Bad limit value ($page->{limit}) in `page`" );
 
-    !exists $page->{offset} || ($page->{offset} =~ /\A[0-9]+\z/)
-        or PONAPI::Exception->throw(message => "Bad offset value in `page`");
+    !exists $page->{offset} || ( $page->{offset} =~ /\A[0-9]+\z/ )
+      or PONAPI::Exception->throw( message => "Bad offset value in `page`" );
 
     $page->{offset} ||= 0;
 
@@ -796,9 +872,9 @@ sub _validate_page {
 
 sub _add_resource_relationships {
     my ( $self, $rec, %args ) = @_;
-    my $doc    = $rec->find_root;
-    my $type   = $rec->type;
-    my $fields = $args{fields};
+    my $doc     = $rec->find_root;
+    my $type    = $rec->type;
+    my $fields  = $args{fields};
     my %include = map { $_ => 1 } @{ $args{include} };
 
     # Do not add sort or page here -- those were for the primary resource
@@ -820,17 +896,16 @@ sub _add_resource_relationships {
         # skipping the relationship if the type has an empty `fields` set
         next if exists $fields->{$rel_type} and !@{ $fields->{$rel_type} };
 
-        my $one_to_many = $self->has_one_to_many_relationship($type, $r);
-        for ( @$relationship ) {
+        my $one_to_many = $self->has_one_to_many_relationship( $type, $r );
+        for (@$relationship) {
             $rec->add_relationship( $r, $_, $one_to_many )
-                ->add_self_link
-                ->add_related_link;
+              ->add_self_link->add_related_link;
         }
 
         $self->_add_included(
-            $rel_type,                            # included type
-            +[ map { $_->{id} } @$relationship ], # included ids
-            %args                                 # filters / fields / etc.
+            $rel_type,    # included type
+            +[ map { $_->{id} } @$relationship ],    # included ids
+            %args                                    # filters / fields / etc.
         ) if exists $include{$r};
     }
 
@@ -850,13 +925,12 @@ sub _add_included {
         fields => $fields,
     );
 
-    my $sth = $self->_db_execute( $stmt );
+    my $sth = $self->_db_execute($stmt);
 
     while ( my $inc = $sth->fetchrow_hashref() ) {
         my $id = delete $inc->{id};
         $doc->add_included( type => $type, id => $id )
-            ->add_attributes( %{$inc} )
-            ->add_self_link;
+          ->add_attributes( %{$inc} )->add_self_link;
     }
 }
 
@@ -873,19 +947,21 @@ sub _find_resource_relationships {
 
 sub _fetchall_relationships {
     my ( $self, %args ) = @_;
-    my ( $type, $id ) = @args{qw< type id >};
+    my ( $type, $id )   = @args{qw< type id >};
 
     # we don't want to autovivify $args{fields}{$type}
     # since it will be checked in order to know whether
     # the key existed in the original fields argument
-    my %type_fields = exists $args{fields}{$type}
-        ? map { $_ => 1 } @{ $args{fields}{$type} }
-        : ();
+    my %type_fields =
+      exists $args{fields}{$type}
+      ? map { $_ => 1 } @{ $args{fields}{$type} }
+      : ();
 
     my %ret;
     my @errors;
 
     for my $name ( keys %{ $self->tables->{$type}->RELATIONS } ) {
+
         # If we have fields, and this relationship is not mentioned, skip
         # it.
         next if keys %type_fields > 0 and !exists $type_fields{$name};
@@ -901,14 +977,14 @@ sub _fetchall_relationships {
             %args,
             type   => $rel_table,
             filter => { $id_column => $id },
-            fields => [ $rel_id_column ],
+            fields => [$rel_id_column],
         );
 
-        my $sth = $self->_db_execute( $stmt );
+        my $sth = $self->_db_execute($stmt);
 
         $ret{$name} = +[
             map +{ type => $rel_type, id => $_->{$rel_id_column} },
-            @{ $sth->fetchall_arrayref({}) }
+            @{ $sth->fetchall_arrayref( {} ) }
         ];
     }
 
@@ -920,15 +996,17 @@ my $sqlite_constraint_failed = do {
     local $@;
     eval { SQLITE_CONSTRAINT() } // undef;
 };
+
 sub _db_execute {
     my ( $self, $stmt ) = @_;
 
-    my ($sth, $ret, $failed, $e);
+    my ( $sth, $ret, $failed, $e );
     {
         local $@;
         eval {
-            $sth = $self->dbh->prepare($stmt->{sql});
-            $ret = $sth->execute(@{ $stmt->{bind} || [] });
+            $sth = $self->dbh->prepare( $stmt->{sql} );
+            $ret = $sth->execute( @{ $stmt->{bind} || [] } );
+
             # This should never happen, since the DB handle is
             # created with RaiseError.
             die $DBI::errstr if !$ret;
@@ -938,19 +1016,22 @@ sub _db_execute {
             $e = $@ || 'Unknown error';
         };
     };
-    if ( $failed ) {
+    if ($failed) {
         my $errstr = $DBI::errstr || "Unknown SQL error";
         my $err_id = $DBI::err    || 0;
 
         my $message;
-        if ( $sqlite_constraint_failed && $err_id && $err_id == $sqlite_constraint_failed ) {
+        if (   $sqlite_constraint_failed
+            && $err_id
+            && $err_id == $sqlite_constraint_failed )
+        {
             PONAPI::Exception->throw(
                 message   => "Table constraint failed: $errstr",
                 sql_error => 1,
                 status    => 409,
             );
         }
-        elsif ( $err_id ) {
+        elsif ($err_id) {
             PONAPI::Exception->throw(
                 message   => $errstr,
                 sql_error => 1,
@@ -958,15 +1039,15 @@ sub _db_execute {
         }
         else {
             PONAPI::Exception->throw(
-                message => "Non-SQL error while running query? $e"
-            )
+                message => "Non-SQL error while running query? $e" );
         }
-    };
+    }
 
     return $sth;
 }
 
 __PACKAGE__->meta->make_immutable;
-no Moose; 1;
+no Moose;
+1;
 
 __END__

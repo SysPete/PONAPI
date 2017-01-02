@@ -3,6 +3,7 @@ use strict;
 use warnings;
 
 use lib 't/lib';
+use File::Temp;
 use Test::More;
 
 BEGIN {
@@ -10,7 +11,16 @@ BEGIN {
     use_ok('Test::Schema');
 }
 
-my $schema = Test::Schema->connect("DBI:SQLite:dbname=testdb.sqlite");
+my $schema = Test::Schema->connect(
+    "DBI:SQLite:dbname=:memory:",
+    undef, undef,
+    {
+        sqlite_unicode  => 1,
+        on_connect_call => 'use_foreign_keys',
+        quote_names     => 1
+    }
+);
+$schema->deploy;
 
 my $repository = PONAPI::Repository::DBIx::Class->new( schema => $schema );
 
@@ -132,5 +142,8 @@ subtest '... type_has_fields' => sub {
     }
 
 };
+
+use DDP;
+p $repository->tables->{Article}->result_source->result_class->_ponapi_m2m_metadata;
 
 done_testing;
